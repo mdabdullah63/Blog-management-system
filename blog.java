@@ -1,48 +1,209 @@
 package org.example;
 
 import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Scanner;
 
+// User model with encapsulation
 class User {
-    String uid, password, role;
-    User(String uid, String password, String role) {
+    private String uid;
+    private String password;
+    private String role;
+
+    public User(String uid, String password, String role) {
         this.uid = uid;
         this.password = password;
         this.role = role;
     }
+    public String getUid() { return uid; }
+    public String getPassword() { return password; }
+    public String getRole() { return role; }
 }
 
+// Post model with encapsulation
 class Post {
-    int id;
-    String title, content, author;
-    Post(int id, String title, String content, String author) {
+    private int id;
+    private String title;
+    private String content;
+    private String author;
+
+    public Post(int id, String title, String content, String author) {
         this.id = id;
         this.title = title;
         this.content = content;
         this.author = author;
     }
+    public int getId() { return id; }
+    public String getTitle() { return title; }
+    public String getContent() { return content; }
+    public String getAuthor() { return author; }
 }
 
-public class blog {
-    static Scanner sc = new Scanner(System.in);
-    static Connection conn;
-    static User loggedInUser = null;
+// Data Access Object for Users
+class UserDAO {
+    private Connection conn;
+    public UserDAO(Connection conn) { this.conn = conn; }
 
-    public static void main(String[] args) {
-        try {
-            // JDBC connection details - replace user and password with your credentials
-            conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/BlogManagement", "root", "root");
-            while (true) {
-                showUserPanel();
-            }
-        } catch (SQLException e) {
-            System.out.println("Database connection failed:");
-            e.printStackTrace();
-            return;
+    public void addUser(User user) throws SQLException {
+        String sql = "INSERT INTO users (uid, password, role) VALUES (?, ?, ?)";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, user.getUid());
+            ps.setString(2, user.getPassword());
+            ps.setString(3, user.getRole());
+            ps.executeUpdate();
         }
     }
 
-    static void showUserPanel() {
+    public User getUserByCredentials(String uid, String password) throws SQLException {
+        String sql = "SELECT * FROM users WHERE uid = ? AND password = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, uid);
+            ps.setString(2, password);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new User(rs.getString("uid"), rs.getString("password"), rs.getString("role"));
+                }
+            }
+        }
+        return null;
+    }
+}
+
+// Data Access Object for Posts
+class PostDAO {
+    private Connection conn;
+    public PostDAO(Connection conn) { this.conn = conn; }
+
+    public void addPost(Post post) throws SQLException {
+        String sql = "INSERT INTO posts (title, content, author) VALUES (?, ?, ?)";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, post.getTitle());
+            ps.setString(2, post.getContent());
+            ps.setString(3, post.getAuthor());
+            ps.executeUpdate();
+        }
+    }
+
+    public List<Post> getAllPosts() throws SQLException {
+        List<Post> posts = new ArrayList<>();
+        String sql = "SELECT * FROM posts ORDER BY id";
+        try (PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                posts.add(new Post(
+                        rs.getInt("id"),
+                        rs.getString("title"),
+                        rs.getString("content"),
+                        rs.getString("author")
+                ));
+            }
+        }
+        return posts;
+    }
+
+    public Post getPostByOffset(int offset) throws SQLException {
+        String sql = "SELECT * FROM posts ORDER BY id LIMIT 1 OFFSET ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, offset);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new Post(
+                            rs.getInt("id"),
+                            rs.getString("title"),
+                            rs.getString("content"),
+                            rs.getString("author")
+                    );
+                }
+            }
+        }
+        return null;
+    }
+
+    public boolean deletePostById(int id) throws SQLException {
+        String sql = "DELETE FROM posts WHERE id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, id);
+            int affected = ps.executeUpdate();
+            return affected > 0;
+        }
+    }
+}
+
+// Service layer for business logic
+class BlogService {
+    private final UserDAO userDAO;
+    private final PostDAO postDAO;
+    private User loggedInUser;
+
+    public BlogService(Connection conn) {
+        userDAO = new UserDAO(conn);
+        postDAO = new PostDAO(conn);
+    }
+
+    public void signUp(String uid, String password, String role) throws SQLException {
+        userDAO.addUser(new User(uid, password, role));
+    }
+
+    public boolean signIn(String uid, String password) throws SQLException {
+        User user = userDAO.getUserByCredentials(uid, password);
+        if (user != null) {
+            loggedInUser = user;
+            return true;
+        }
+        return false;
+    }
+
+    public User getLoggedInUser() { return loggedInUser; }
+
+    public void logout() { loggedInUser = null; }
+
+    public void createPost(String title, String content) throws SQLException {
+        if (loggedInUser != null) {
+            postDAO.addPost(new Post(0, title, content, loggedInUser.getUid()));
+        }
+    }
+
+    public List<Post> getAllPosts() throws SQLException {
+        return postDAO.getAllPosts();
+    }
+
+    public Post getPostByNumber(int postNumber) throws SQLException {
+        return postDAO.getPostByOffset(postNumber - 1);
+    }
+
+    public boolean deletePost(int postNumber) throws SQLException {
+        Post post = postDAO.getPostByOffset(postNumber - 1);
+        if (post == null) return false;
+
+        if (post.getAuthor().equals(loggedInUser.getUid()) || loggedInUser.getRole().equals("admin")) {
+            return postDAO.deletePostById(post.getId());
+        }
+        return false;
+    }
+}
+
+// UI and application entrypoint, interacts with service layer only
+public class blog {
+    private static Scanner sc = new Scanner(System.in);
+    private static Connection conn;
+    private static BlogService service;
+
+    public static void main(String[] args) {
+        try {
+            conn = DriverManager.getConnection("jdbc:mysql://localhost:3306/BlogManagement", "root", "root");
+            service = new BlogService(conn);
+
+            while(true) {
+                showUserPanel();
+            }
+        } catch(SQLException e) {
+            System.out.println("Database connection failed:");
+            e.printStackTrace();
+        }
+    }
+
+    private static void showUserPanel() throws SQLException {
         System.out.println("***********************************************");
         System.out.println("               BLOG MANAGEMENT                 ");
         System.out.println("***********************************************");
@@ -51,73 +212,52 @@ public class blog {
         System.out.println("-----------------------------------------------");
         System.out.print("Select your account first : ");
         String choice = sc.nextLine();
-        if (choice.equals("1")) signUp();
-        else if (choice.equals("2")) signIn();
-        else if (choice.equals("*")) adminPanel();
-        else System.out.println("Invalid Choice!");
-    }
-
-    static void signUp() {
-        try {
-            System.out.print("Enter your UiD: ");
-            String uid = sc.nextLine();
-            System.out.print("Enter your password: ");
-            String password = sc.nextLine();
-            System.out.print("Enter your role (user/admin): ");
-            String role = sc.nextLine();
-
-            String sql = "INSERT INTO users (uid, password, role) VALUES (?, ?, ?)";
-            PreparedStatement ps = conn.prepareStatement(sql);
-            ps.setString(1, uid);
-            ps.setString(2, password);
-            ps.setString(3, role);
-            ps.executeUpdate();
-
-            System.out.println("User registered successfully!");
-        } catch (SQLException e) {
-            System.out.println("Error during sign up:");
-            e.printStackTrace();
+        switch(choice) {
+            case "1": signUp(); break;
+            case "2": signIn(); break;
+            case "*": adminPanel(); break;
+            default: System.out.println("Invalid Choice!"); break;
         }
     }
 
-    static void signIn() {
-        try {
-            System.out.print("Enter your UiD: ");
-            String uid = sc.nextLine();
-            System.out.print("Enter your password: ");
-            String password = sc.nextLine();
+    private static void signUp() throws SQLException {
+        System.out.print("Enter your UiD: ");
+        String uid = sc.nextLine();
+        System.out.print("Enter your password: ");
+        String password = sc.nextLine();
+        System.out.print("Enter your role (user/admin): ");
+        String role = sc.nextLine();
 
-            String sql = "SELECT * FROM users WHERE uid = ? AND password = ?";
-            PreparedStatement ps = conn.prepareStatement(sql);
-            ps.setString(1, uid);
-            ps.setString(2, password);
-            ResultSet rs = ps.executeQuery();
+        service.signUp(uid, password, role);
+        System.out.println("User registered successfully!");
+    }
 
-            if (rs.next()) {
-                loggedInUser = new User(rs.getString("uid"), rs.getString("password"), rs.getString("role"));
-                System.out.println("Login successful. " + uid);
-                if (loggedInUser.role.equals("user")) {
-                    registeredUserPanel();
-                } else if (loggedInUser.role.equals("admin")) {
-                    adminPanel();
-                }
-            } else {
-                System.out.println("Invalid credentials.");
+    private static void signIn() throws SQLException {
+        System.out.print("Enter your UiD: ");
+        String uid = sc.nextLine();
+        System.out.print("Enter your password: ");
+        String password = sc.nextLine();
+
+        if (service.signIn(uid, password)) {
+            System.out.println("Login successful. " + uid);
+            User user = service.getLoggedInUser();
+            if ("user".equals(user.getRole())) {
+                registeredUserPanel();
+            } else if ("admin".equals(user.getRole())) {
+                adminPanel();
             }
-        } catch (SQLException e) {
-            System.out.println("Error during sign in:");
-            e.printStackTrace();
+        } else {
+            System.out.println("Invalid credentials.");
         }
     }
 
-    static void adminPanel() {
-        while (true) {
+    private static void adminPanel() throws SQLException {
+        while(true) {
             System.out.println("Admin Panel:");
-            System.out.println("1) Create Post       2) Read All Posts       3) View Post       4) Delete Post       5) Logout");
+            System.out.println("1) Create Post   2) Read All Posts   3) View Post   4) Delete Post   5) Logout");
             System.out.print("Enter your choice: ");
             String choice = sc.nextLine();
-
-            switch (choice) {
+            switch(choice) {
                 case "1":
                     createPost();
                     break;
@@ -131,7 +271,7 @@ public class blog {
                     deletePost();
                     break;
                 case "5":
-                    loggedInUser = null;
+                    service.logout();
                     return;
                 default:
                     System.out.println("Invalid choice!");
@@ -139,13 +279,13 @@ public class blog {
         }
     }
 
-    static void registeredUserPanel() {
-        while (true) {
+    private static void registeredUserPanel() throws SQLException {
+        while(true) {
             System.out.println("Registered User Panel:");
             System.out.println("1) Create Post   2) Read All Posts   3) View Post   4) Delete Post   5) Logout");
             System.out.print("Enter your choice: ");
-            String ch = sc.nextLine();
-            switch (ch) {
+            String choice = sc.nextLine();
+            switch(choice) {
                 case "1":
                     createPost();
                     break;
@@ -159,7 +299,7 @@ public class blog {
                     deletePost();
                     break;
                 case "5":
-                    loggedInUser = null;
+                    service.logout();
                     return;
                 default:
                     System.out.println("Invalid choice!");
@@ -167,103 +307,53 @@ public class blog {
         }
     }
 
-    static void createPost() {
-        try {
-            System.out.print("Title: ");
-            String title = sc.nextLine();
-            System.out.print("Content: ");
-            String content = sc.nextLine();
+    private static void createPost() throws SQLException {
+        System.out.print("Title: ");
+        String title = sc.nextLine();
+        System.out.print("Content: ");
+        String content = sc.nextLine();
 
-            String sql = "INSERT INTO posts (title, content, author) VALUES (?, ?, ?)";
-            PreparedStatement ps = conn.prepareStatement(sql);
-            ps.setString(1, title);
-            ps.setString(2, content);
-            ps.setString(3, loggedInUser.uid);
-            ps.executeUpdate();
+        service.createPost(title, content);
+        System.out.println("Post created Successfully");
+    }
 
-            System.out.println("Post created Successfully");
-        } catch (SQLException e) {
-            System.out.println("Error creating post:");
-            e.printStackTrace();
+    private static void readAllPosts() throws SQLException {
+        var posts = service.getAllPosts();
+        int i = 1;
+        for(Post p : posts) {
+            System.out.println(i++ + ". " + p.getTitle() + " by " + p.getAuthor());
         }
     }
 
-    static void readAllPosts() {
+    private static void viewPost() throws SQLException {
+        System.out.print("Enter post number to view: ");
+        int num;
         try {
-            String sql = "SELECT * FROM posts ORDER BY id";
-            PreparedStatement ps = conn.prepareStatement(sql);
-            ResultSet rs = ps.executeQuery();
-            int i = 1;
-            while (rs.next()) {
-                System.out.println(i++ + ". " + rs.getString("title") + " by " + rs.getString("author"));
-            }
-        } catch (SQLException e) {
-            System.out.println("Error reading posts:");
-            e.printStackTrace();
-        }
-    }
-
-    static void viewPost() {
-        try {
-            System.out.print("Enter post number to view: ");
-            int num = Integer.parseInt(sc.nextLine());
-
-            String sql = "SELECT * FROM posts ORDER BY id LIMIT 1 OFFSET ?";
-            PreparedStatement ps = conn.prepareStatement(sql);
-            ps.setInt(1, num - 1);
-            ResultSet rs = ps.executeQuery();
-
-            if (rs.next()) {
-                System.out.println("Title: " + rs.getString("title"));
-                System.out.println("By: " + rs.getString("author"));
-                System.out.println("Content: " + rs.getString("content"));
-            } else {
-                System.out.println("Invalid post number.");
-            }
-        } catch (SQLException e) {
-            System.out.println("Error viewing post:");
-            e.printStackTrace();
-        } catch (NumberFormatException ex) {
+            num = Integer.parseInt(sc.nextLine());
+        } catch(NumberFormatException e) {
             System.out.println("Invalid input.");
+            return;
+        }
+        Post p = service.getPostByNumber(num);
+        if (p != null) {
+            System.out.println("Title: " + p.getTitle());
+            System.out.println("By: " + p.getAuthor());
+            System.out.println("Content: " + p.getContent());
+        } else {
+            System.out.println("Invalid post number.");
         }
     }
 
-    static void deletePost() {
+    private static void deletePost() throws SQLException {
+        System.out.print("Enter post number to delete: ");
+        int num;
         try {
-            System.out.print("Enter post number to delete: ");
-            int num = Integer.parseInt(sc.nextLine());
-
-            // First retrieve post id and author by offset
-            String selectSql = "SELECT id, author FROM posts ORDER BY id LIMIT 1 OFFSET ?";
-            PreparedStatement selectPs = conn.prepareStatement(selectSql);
-            selectPs.setInt(1, num - 1);
-            ResultSet rs = selectPs.executeQuery();
-
-            if (rs.next()) {
-                int postId = rs.getInt("id");
-                String author = rs.getString("author");
-
-                if (author.equals(loggedInUser.uid) || loggedInUser.role.equals("admin")) {
-                    String deleteSql = "DELETE FROM posts WHERE id = ?";
-                    PreparedStatement deletePs = conn.prepareStatement(deleteSql);
-                    deletePs.setInt(1, postId);
-                    int affected = deletePs.executeUpdate();
-                    if (affected > 0) {
-                        System.out.println("Post deleted.");
-                    } else {
-                        System.out.println("Failed to delete post.");
-                    }
-                } else {
-                    System.out.println("Cannot delete others' posts.");
-                }
-            } else {
-                System.out.println("Invalid post number.");
-            }
-        } catch (SQLException e) {
-            System.out.println("Error deleting post:");
-            e.printStackTrace();
-        } catch (NumberFormatException ex) {
+            num = Integer.parseInt(sc.nextLine());
+        } catch(NumberFormatException e) {
             System.out.println("Invalid input.");
+            return;
         }
+        boolean deleted = service.deletePost(num);
+        System.out.println(deleted ? "Post deleted." : "Cannot delete post (may not exist or insufficient permissions).");
     }
 }
